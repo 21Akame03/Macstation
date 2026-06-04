@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace Pipette {
 
@@ -52,6 +53,11 @@ private:
     // RGB field placement within a pixel, from the var screen info.
     uint32_t r_off_ = 0, g_off_ = 0, b_off_ = 0;
     uint32_t r_len_ = 0, g_len_ = 0, b_len_ = 0;
+
+    // Per-column source byte offset, rebuilt per frame; reused to avoid a
+    // per-pixel divide in the blit inner loop. (Kept as a member so it isn't
+    // reallocated every frame.)
+    std::vector<int> col_off_;
 };
 
 } // namespace Pipette

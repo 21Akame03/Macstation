@@ -10,6 +10,8 @@
 #include "framebuffer.hpp"
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -129,6 +131,11 @@ int main() {
         std::cerr << "accept failed: " << strerror(errno) << std::endl;
         continue;
     }
+
+    // ship each frame immediately instead of letting Nagle coalesce the
+    // header/body writes -- lower per-frame latency for the video stream.
+    int nodelay = 1;
+    setsockopt(connfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
   // read frames until the peer closes the connection.
   // each frame is: PacketHeader -> FrameHeader -> JPEG bytes

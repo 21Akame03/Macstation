@@ -19,6 +19,7 @@
 #include <random>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <netinet/tcp.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <thread>
@@ -315,6 +316,11 @@ int main(int argc, char *argv[]) {
         std::cerr << "Connection FAILED: address " << pi_ip << " on Port " << pi_port << ": " << strerror(errno) << std::endl;
         exit(1);
     }
+
+    // send each frame's header+body straight out instead of letting Nagle wait
+    // to coalesce them -- lower per-frame latency on the video stream.
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
     // start the worker threads: capture+encode produces frames, sender ships them
     std::thread capture(capture_thread, std::ref(f));

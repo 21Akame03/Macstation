@@ -78,11 +78,15 @@ void Capture::start(FrameCallback cb) {
       return;
     }
 
-    // 3. Configure the stream — 720p, 24fps, BGRA pixels
+    // 3. Configure the stream — 1080p, 30fps, BGRA pixels.
+    // Match the Pi's 1920x1080 framebuffer so frames arrive 1:1 and the Pi
+    // doesn't have to upscale (which softened the image). The Mac scales the
+    // display down to this size on the GPU, which looks far better than the
+    // Pi's nearest-neighbour blit.
     SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
-    config.width = 1280;
-    config.height = 720;
-    config.minimumFrameInterval = CMTimeMake(1, 24); // 1/24 second
+    config.width = 1920;
+    config.height = 1080;
+    config.minimumFrameInterval = CMTimeMake(1, 30); // up to 30 fps
     config.pixelFormat = kCVPixelFormatType_32BGRA;
 
     // 4. Create a filter — capture the whole display

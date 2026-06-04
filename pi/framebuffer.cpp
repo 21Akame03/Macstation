@@ -205,6 +205,12 @@ bool Framebuffer::show_jpeg(const uint8_t *jpeg, size_t len) {
     }
 
     cinfo.out_color_space = JCS_RGB;  // 3 bytes/pixel, R,G,B
+    // Favour decode speed over the last bit of fidelity -- this is streaming
+    // video, so the fast integer IDCT and skipping fancy upsampling/smoothing
+    // are imperceptible but noticeably cheaper on the Pi's CPU.
+    cinfo.dct_method         = JDCT_IFAST;
+    cinfo.do_fancy_upsampling = FALSE;
+    cinfo.do_block_smoothing  = FALSE;
     jpeg_start_decompress(&cinfo);
 
     img_w = static_cast<int>(cinfo.output_width);
@@ -245,6 +251,14 @@ void Framebuffer::blit_rgb(const uint8_t *rgb, int img_w, int img_h) {
     const int off_x = (static_cast<int>(xres_) - dst_w) / 2;
     const int off_y = (static_cast<int>(yres_) - dst_h) / 2;
 
+    // Precompute the source-column byte offset for each destination column once
+    // per frame. The naive form does `dx * img_w / dst_w` *per pixel* -- an
+    // integer divide in the inner loop, which dominates the blit on the Pi's
+    // CPU. Hoisting it to a per-column table turns the inner loop into lookups.
+    col_off_.resize(static_cast<size_t>(dst_w));
+    for (int dx = 0; dx < dst_w; ++dx)
+        col_off_[dx] = (dx * img_w / dst_w) * 3;
+
     for (int dy = 0; dy < dst_h; ++dy) {
         const int sy_px = dy * img_h / dst_h;
         const uint8_t *src_row = rgb + static_cast<size_t>(sy_px) * img_w * 3;
@@ -253,7 +267,7 @@ void Framebuffer::blit_rgb(const uint8_t *rgb, int img_w, int img_h) {
             static_cast<size_t>(off_x) * bytes_pp_;
 
         for (int dx = 0; dx < dst_w; ++dx) {
-            const uint8_t *p = src_row + static_cast<size_t>(dx * img_w / dst_w) * 3;
+            const uint8_t *p = src_row + col_off_[dx];
             const uint32_t pixel =
                 (to_field(p[0], r_len_) << r_off_) |
                 (to_field(p[1], g_len_) << g_off_) |
