@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Pipette VERSION 0.1.0 LANGUAGES CXX)
+project(Pipette VERSION 0.1.0 LANGUAGES CXX C)
 
 
 set(CMAKE_CXX_STANDARD 20)
@@ -14,3 +14,4 @@ if(APPLE)
 endif()
 
 add_subdirectory(pi)
+add_subdirectory(test)

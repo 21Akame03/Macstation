@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <mutex>
 #include <netinet/in.h>
+#include <net/if.h>
+#include <ifaddrs.h>
 #include <ostream>
 #include <random>
 #include <sys/socket.h>
@@ -94,6 +96,46 @@ void capture_thread(jpegFrame &f) {
         f.stop = true;
     }
     f.cv.notify_one();
+}
+
+// macOS scoped-routing fix: an interface brought up manually with `ifconfig`
+// (e.g. a USB/Ethernet gadget link to the Pi) has no registered network service,
+// so plain connect()'s default source-address selection fails with EHOSTUNREACH.
+// Find the local interface whose subnet contains the destination so we can pin
+// the socket to it with IP_BOUND_IF. Returns the interface index, or 0 if none.
+// On match, *src_out is filled with that interface's own address so the caller
+// can pin the connection's source address too (sae_srcif alone scopes only the
+// output interface; the kernel may still pick the primary interface's address).
+// Override interface selection with PIPETTE_IFACE=<ifname> (e.g. en13).
+static unsigned int iface_for_dest(const struct sockaddr_in *dst,
+                                   struct sockaddr_in *src_out) {
+    const char *forced = getenv("PIPETTE_IFACE");
+
+    struct ifaddrs *ifs = nullptr;
+    if (getifaddrs(&ifs) != 0) return 0;
+
+    unsigned int found = 0;
+    for (struct ifaddrs *ifa = ifs; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || !ifa->ifa_netmask) continue;
+
+        // pick by name if forced, otherwise by subnet match against the dest
+        bool match;
+        if (forced) {
+            match = (strcmp(ifa->ifa_name, forced) == 0);
+        } else {
+            uint32_t local = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr)->sin_addr.s_addr;
+            uint32_t mask  = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_netmask)->sin_addr.s_addr;
+            match = ((local & mask) == (dst->sin_addr.s_addr & mask));
+        }
+        if (match) {
+            found = if_nametoindex(ifa->ifa_name);
+            *src_out = *reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+            break;
+        }
+    }
+    freeifaddrs(ifs);
+    return found;
 }
 
 // host -> network byte order for 64-bit (mac has no portable htonll)
@@ -208,21 +250,68 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    // getting File descriptor for the socket
-    // NOTE: Remember that in unix, everything is a file; the fd is basically the descriptor or reference to the connection port / file
-    int s = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
-    if (s < 0 ) {
-        std::cerr << "Unable to create Socket" << std::endl;
-        exit(1);
+    // Find the interface on the Pi's subnet and pin BOTH its index and its
+    // source address. Without the source address the kernel picks the primary
+    // interface's address for a scoped route and connect() -> EHOSTUNREACH.
+    struct sockaddr_in src{};
+    unsigned int bound_if =
+        iface_for_dest(reinterpret_cast<struct sockaddr_in *>(servinfo->ai_addr), &src);
+    if (bound_if) {
+        char ifname[IF_NAMESIZE] = {0};
+        if_indextoname(bound_if, ifname);
+        std::cout << "Routing to Pi via " << ifname << " (source "
+                  << inet_ntoa(src.sin_addr) << ")" << std::endl;
     }
 
-    // don't let a dropped Pi connection raise SIGPIPE and kill us; send() returns EPIPE instead
-    int on = 1;
-    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+    // connectx() is the same API macOS `nc` uses. Source is pinned via bind()
+    // below, so endpoints only carry the destination.
+    sa_endpoints_t eps;
+    memset(&eps, 0, sizeof(eps));
+    eps.sae_dstaddr    = servinfo->ai_addr;
+    eps.sae_dstaddrlen = servinfo->ai_addrlen;
 
-    // given we do not care about the local port;
-    // we use connect
-    if (connect(s, servinfo->ai_addr, servinfo->ai_addrlen) < 0) {
+    // The USB-gadget link to the Pi goes idle, so the first attempt often hits
+    // EHOSTUNREACH (no ARP entry yet) — the attempt itself kicks off ARP. Retry
+    // a few times, like ping does, so a later attempt lands once the neighbor
+    // resolves. ECONNREFUSED covers the Pi server not being up yet. A failed
+    // connect can leave a blocking socket unusable, so recreate it each attempt.
+    const int max_attempts = 20;
+    int s = -1;
+    bool connected = false;
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        s = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol);
+        if (s < 0) {
+            std::cerr << "Unable to create Socket" << std::endl;
+            exit(1);
+        }
+
+        // don't let a dropped Pi connection raise SIGPIPE and kill us; send() returns EPIPE instead
+        int on = 1;
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+        if (bound_if) setsockopt(s, IPPROTO_IP, IP_BOUND_IF, &bound_if, sizeof(bound_if));
+
+        // bind the source address explicitly (this is what `nc -s` does, and the
+        // only thing that reliably reaches the Pi over the scoped en13 link).
+        if (bound_if && bind(s, reinterpret_cast<struct sockaddr *>(&src), sizeof(src)) != 0) {
+            std::cerr << "Warning: bind to source " << inet_ntoa(src.sin_addr)
+                      << " failed: " << strerror(errno) << std::endl;
+        }
+
+        if (connectx(s, &eps, SAE_ASSOCID_ANY, 0, nullptr, 0, nullptr, nullptr) == 0) {
+            connected = true;
+            break;
+        }
+        if (errno != EHOSTUNREACH && errno != ECONNREFUSED && errno != ETIMEDOUT) {
+            close(s);
+            break;
+        }
+        std::cerr << "connect attempt " << attempt << "/" << max_attempts
+                  << " to " << pi_ip << ":" << pi_port << " — " << strerror(errno)
+                  << ", retrying..." << std::endl;
+        close(s);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    if (!connected) {
         std::cerr << "Connection FAILED: address " << pi_ip << " on Port " << pi_port << ": " << strerror(errno) << std::endl;
         exit(1);
     }
