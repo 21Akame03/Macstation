@@ -33,6 +33,11 @@ public:
     // centered, scaled to fit. Returns false on decode failure or if closed.
     bool show_jpeg(const uint8_t *jpeg, size_t len);
 
+    // Timings (ms) of the last show_jpeg(), split so we can tell whether the
+    // Pi's limit is JPEG decode or the framebuffer blit.
+    double last_decode_ms() const { return last_decode_ms_; }
+    double last_blit_ms()   const { return last_blit_ms_; }
+
 private:
     void close();
     void clear();                                   // paint whole screen black
@@ -58,6 +63,14 @@ private:
     // per-pixel divide in the blit inner loop. (Kept as a member so it isn't
     // reallocated every frame.)
     std::vector<int> col_off_;
+
+    // Cached RAM back-buffer mirroring the framebuffer layout. We draw here
+    // (fast, cached) and push to the real fb with one bulk memcpy, instead of
+    // doing millions of slow scattered writes straight to uncached fb memory.
+    std::vector<uint8_t> backbuf_;
+
+    double last_decode_ms_ = 0;
+    double last_blit_ms_   = 0;
 };
 
 } // namespace Pipette

@@ -10,6 +10,7 @@
 #include <linux/kd.h>
 
 #include <csetjmp>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -116,6 +117,8 @@ bool Framebuffer::open(const char *dev) {
         return false;
     }
 
+    backbuf_.assign(mem_len_, 0);   // cached scratch we draw into, then blit
+
     std::cout << "framebuffer: " << xres_ << "x" << yres_ << " "
               << var.bits_per_pixel << "bpp, stride " << line_length_
               << std::endl;
@@ -197,6 +200,7 @@ bool Framebuffer::show_jpeg(const uint8_t *jpeg, size_t len) {
         return false;
     }
 
+    const auto t_decode0 = std::chrono::steady_clock::now();
     jpeg_create_decompress(&cinfo);
     jpeg_mem_src(&cinfo, jpeg, static_cast<unsigned long>(len));
     if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
@@ -227,7 +231,14 @@ bool Framebuffer::show_jpeg(const uint8_t *jpeg, size_t len) {
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
 
+    const auto t_decode1 = std::chrono::steady_clock::now();
     blit_rgb(rgb.data(), img_w, img_h);
+    const auto t_blit1 = std::chrono::steady_clock::now();
+
+    last_decode_ms_ =
+        std::chrono::duration<double, std::milli>(t_decode1 - t_decode0).count();
+    last_blit_ms_ =
+        std::chrono::duration<double, std::milli>(t_blit1 - t_decode1).count();
     return true;
 }
 
@@ -259,10 +270,12 @@ void Framebuffer::blit_rgb(const uint8_t *rgb, int img_w, int img_h) {
     for (int dx = 0; dx < dst_w; ++dx)
         col_off_[dx] = (dx * img_w / dst_w) * 3;
 
+    // Draw into the cached RAM back-buffer, not the uncached fb directly.
+    uint8_t *base = backbuf_.data();
     for (int dy = 0; dy < dst_h; ++dy) {
         const int sy_px = dy * img_h / dst_h;
         const uint8_t *src_row = rgb + static_cast<size_t>(sy_px) * img_w * 3;
-        uint8_t *dst_row = mem_ +
+        uint8_t *dst_row = base +
             static_cast<size_t>(off_y + dy) * line_length_ +
             static_cast<size_t>(off_x) * bytes_pp_;
 
@@ -287,6 +300,10 @@ void Framebuffer::blit_rgb(const uint8_t *rgb, int img_w, int img_h) {
             }
         }
     }
+
+    // One bulk streaming write to the uncached framebuffer, instead of the
+    // millions of tiny scattered writes the per-pixel loop would otherwise do.
+    std::memcpy(mem_, base, mem_len_);
 }
 
 } // namespace Pipette
