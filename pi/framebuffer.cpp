@@ -7,6 +7,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/fb.h>
+#include <linux/kd.h>
 
 #include <csetjmp>
 #include <cstdio>
@@ -93,11 +94,39 @@ bool Framebuffer::open(const char *dev) {
     std::cout << "framebuffer: " << xres_ << "x" << yres_ << " "
               << var.bits_per_pixel << "bpp, stride " << line_length_
               << std::endl;
+
+    // Take the console VT into graphics mode so fbcon stops drawing (cursor
+    // blink, log messages) on top of our pixels. Non-fatal if it fails (e.g.
+    // not running on a real VT) -- you'll just see the console bleed through.
+    tty_fd_ = ::open("/dev/tty0", O_RDWR);
+    if (tty_fd_ >= 0) {
+        if (ioctl(tty_fd_, KDSETMODE, KD_GRAPHICS) != 0) {
+            std::cerr << "framebuffer: KD_GRAPHICS failed: "
+                      << std::strerror(errno) << " (console may bleed through)"
+                      << std::endl;
+            ::close(tty_fd_);
+            tty_fd_ = -1;
+        }
+    } else {
+        std::cerr << "framebuffer: open /dev/tty0 failed: "
+                  << std::strerror(errno) << " (console may bleed through)"
+                  << std::endl;
+    }
+
     clear();
     return true;
 }
 
+void Framebuffer::restore_console() {
+    if (tty_fd_ >= 0) {
+        ioctl(tty_fd_, KDSETMODE, KD_TEXT);
+        ::close(tty_fd_);
+        tty_fd_ = -1;
+    }
+}
+
 void Framebuffer::close() {
+    restore_console();
     if (mem_ && mem_ != MAP_FAILED) munmap(mem_, mem_len_);
     mem_ = nullptr;
     mem_len_ = 0;
@@ -211,6 +240,7 @@ namespace Pipette {
 Framebuffer::~Framebuffer() = default;
 bool Framebuffer::open(const char *) { return false; }
 bool Framebuffer::show_jpeg(const uint8_t *, size_t) { return false; }
+void Framebuffer::restore_console() {}
 void Framebuffer::close() {}
 void Framebuffer::clear() {}
 void Framebuffer::blit_rgb(const uint8_t *, int, int) {}

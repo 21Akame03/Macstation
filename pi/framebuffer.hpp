@@ -22,6 +22,12 @@ public:
     bool open(const char *dev = "/dev/fb0");
     bool is_open() const { return mem_ != nullptr; }
 
+    // Put the console VT back into text mode. Safe to call multiple times and
+    // from a signal handler; the destructor calls it too. Exposed so a signal
+    // handler can restore the console if the process is interrupted while
+    // drawing (otherwise the VT is left blank in graphics mode).
+    void restore_console();
+
     // Decode a JPEG buffer and blit it to the screen, aspect-correct and
     // centered, scaled to fit. Returns false on decode failure or if closed.
     bool show_jpeg(const uint8_t *jpeg, size_t len);
@@ -33,6 +39,7 @@ private:
     void blit_rgb(const uint8_t *rgb, int img_w, int img_h);
 
     int      fd_  = -1;
+    int      tty_fd_ = -1;                // VT we put into graphics mode
     uint8_t *mem_ = nullptr;
     size_t   mem_len_ = 0;
 

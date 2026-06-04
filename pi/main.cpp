@@ -14,8 +14,21 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <string.h>
+#include <csignal>
+#include <cstdlib>
 
 #define BACKLOG 10 // No of pending connections allowed
+
+// Set once the screen is open so the signal handler can put the console VT
+// back into text mode if we're interrupted (Ctrl+C / kill) mid-draw; otherwise
+// the VT is left blank in graphics mode and the console is unusable.
+static Pipette::Framebuffer *g_screen = nullptr;
+
+static void on_signal(int sig) {
+    if (g_screen) g_screen->restore_console();
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);   // re-raise with default disposition to actually exit
+}
 
 // network -> host byte order for 64-bit (symmetric with the host's htonll_)
 static uint64_t ntohll_(uint64_t v) {
@@ -98,7 +111,11 @@ int main() {
   // build), we fall back to dumping the latest frame to frame.jpg instead.
   Pipette::Framebuffer screen;
   bool have_screen = screen.open();
-  if (!have_screen) {
+  if (have_screen) {
+    g_screen = &screen;
+    std::signal(SIGINT,  on_signal);
+    std::signal(SIGTERM, on_signal);
+  } else {
     std::cout << "no framebuffer; writing frames to frame.jpg" << std::endl;
   }
 
