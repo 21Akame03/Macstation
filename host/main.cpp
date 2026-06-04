@@ -54,9 +54,6 @@ void capture_thread(jpegFrame &f) {
     MjpegEncoder encoder;
 
     capture.start([&](Pipette::Frame& frame) {
-        std::cout << "Frame: " << frame.width << "x" << frame.height
-                  << " size= " << frame.size << " ts = " << frame.timestamp_us << " \n";
-
         //
         // 1. encode the BGRA frame to JPEG (pitch 0 = tightly packed)
         // 2. Lock, overwite and unlock
@@ -175,6 +172,10 @@ static bool send_all(int s, const void *buf, size_t len) {
 void sender_thread(jpegFrame &f, int s) {
     uint32_t frame_id = 0;
 
+    // 1 Hz throughput stats so we can see whether the link is the bottleneck.
+    auto stat_t0 = std::chrono::steady_clock::now();
+    uint64_t stat_frames = 0, stat_bytes = 0;
+
     while (true) {
         std::vector<uint8_t> jpeg;
         uint32_t width = 0, height = 0;
@@ -192,8 +193,6 @@ void sender_thread(jpegFrame &f, int s) {
             timestamp_us = f.timestamp_us;
             f.newframe_present = false;
         }
-
-        std::cout << "Sender: got JPEG frame, " << jpeg.size() << " bytes\n";
 
         // per-frame info: dimensions, encoding, checksum
         Pipette::FrameHeader fhdr {};
@@ -220,7 +219,19 @@ void sender_thread(jpegFrame &f, int s) {
             g_running = false;   // tell capture_thread to wind down too
             break;
         }
-        std::cout << "Sent Successfully\n";
+
+        ++stat_frames;
+        stat_bytes += jpeg.size();
+        auto now = std::chrono::steady_clock::now();
+        double dt = std::chrono::duration<double>(now - stat_t0).count();
+        if (dt >= 1.0) {
+            std::cerr << "tx " << (stat_frames / dt) << " fps, "
+                      << (stat_bytes / 1024.0 / stat_frames) << " KB/frame, "
+                      << (stat_bytes / (1024.0 * 1024.0) / dt) << " MB/s\n";
+            stat_t0 = now;
+            stat_frames = 0;
+            stat_bytes = 0;
+        }
     }
 }
 

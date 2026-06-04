@@ -18,6 +18,7 @@
 #include <string.h>
 #include <csignal>
 #include <cstdlib>
+#include <chrono>
 
 #define BACKLOG 10 // No of pending connections allowed
 
@@ -121,6 +122,12 @@ int main() {
     std::cout << "no framebuffer; writing frames to frame.jpg" << std::endl;
   }
 
+  // 1 Hz receive/render stats (printed to stderr -- on a local console with
+  // fbcon unbound these don't render on screen; over SSH they go to your shell)
+  auto stat_t0 = std::chrono::steady_clock::now();
+  uint64_t stat_frames = 0, stat_bytes = 0;
+  double   stat_render_ms = 0;
+
   // serve clients one at a time, but keep running after each disconnects
   // (otherwise the process exits after the first connection closes)
   while (true) {
@@ -199,10 +206,32 @@ int main() {
       if (!ok) continue;   // drop corrupt frame
 
       // push the frame to the screen; if there's no framebuffer (or the decode
-      // fails), fall back to dumping the latest frame to disk.
-      if (!have_screen || !screen.show_jpeg(jpeg.data(), jpeg_size)) {
+      // fails), fall back to dumping the latest frame to disk. Time the
+      // decode+blit so we can tell whether the Pi (vs the link) is the limit.
+      auto t0 = std::chrono::steady_clock::now();
+      bool shown = have_screen && screen.show_jpeg(jpeg.data(), jpeg_size);
+      auto t1 = std::chrono::steady_clock::now();
+      if (!shown) {
           std::ofstream out("frame.jpg", std::ios::binary | std::ios::trunc);
           out.write(reinterpret_cast<const char *>(jpeg.data()), jpeg_size);
+      }
+
+      // 1 Hz stats: effective fps, avg decode+blit ms, avg frame size.
+      ++stat_frames;
+      stat_bytes += jpeg_size;
+      stat_render_ms += std::chrono::duration<double, std::milli>(t1 - t0).count();
+      auto now = std::chrono::steady_clock::now();
+      double dt = std::chrono::duration<double>(now - stat_t0).count();
+      if (dt >= 1.0) {
+          std::cerr << "rx " << (stat_frames / dt) << " fps, "
+                    << (stat_render_ms / stat_frames) << " ms render, "
+                    << (stat_bytes / 1024.0 / stat_frames) << " KB/frame, "
+                    << (stat_bytes / (1024.0 * 1024.0) / dt) << " MB/s"
+                    << std::endl;
+          stat_t0 = now;
+          stat_frames = 0;
+          stat_bytes = 0;
+          stat_render_ms = 0;
       }
   }
 
