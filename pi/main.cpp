@@ -176,12 +176,18 @@ int main() {
       uint16_t got = checksum16(jpeg.data(), jpeg_size);
       bool ok = (got == checksum);
 
-      std::cout << "Frame " << frame_id
-                << " " << width << "x" << height
-                << " ts=" << timestamp_us
-                << " enc=" << (int) fhdr.encoding
-                << " " << jpeg_size << " bytes"
-                << " checksum " << (ok ? "OK" : "MISMATCH") << std::endl;
+      // When we own the screen, stay silent per-frame -- logging here scrolls
+      // text across the display. Only surface a corrupt frame (to stderr).
+      if (!have_screen) {
+          std::cout << "Frame " << frame_id
+                    << " " << width << "x" << height
+                    << " ts=" << timestamp_us
+                    << " enc=" << (int) fhdr.encoding
+                    << " " << jpeg_size << " bytes"
+                    << " checksum " << (ok ? "OK" : "MISMATCH") << std::endl;
+      } else if (!ok) {
+          std::cerr << "frame " << frame_id << " checksum MISMATCH" << std::endl;
+      }
 
       if (!ok) continue;   // drop corrupt frame
 

@@ -40,6 +40,8 @@ private:
 
     int      fd_  = -1;
     int      tty_fd_ = -1;                // VT we put into graphics mode
+    bool     fbcon_unbound_ = false;      // did we detach fbcon from the fb?
+    char     fbcon_bind_path_[64] = {0};  // sysfs bind file to rebind on exit
     uint8_t *mem_ = nullptr;
     size_t   mem_len_ = 0;
 

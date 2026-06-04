@@ -41,6 +41,31 @@ void on_jpeg_error(j_common_ptr cinfo) {
 inline uint32_t to_field(uint8_t v, uint32_t len) {
     return len >= 8 ? static_cast<uint32_t>(v) : (v >> (8 - len));
 }
+
+// Does /sys/class/vtconsole/vtcon<i>/name say it's the framebuffer console?
+bool is_fbcon(int i) {
+    char path[64];
+    std::snprintf(path, sizeof(path),
+                  "/sys/class/vtconsole/vtcon%d/name", i);
+    int fd = ::open(path, O_RDONLY);
+    if (fd < 0) return false;
+    char buf[128];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    ::close(fd);
+    if (n <= 0) return false;
+    buf[n] = '\0';
+    return std::strstr(buf, "frame buffer device") != nullptr;
+}
+
+// Write a single byte to a sysfs bind file. Uses only raw syscalls so it's
+// safe to call from the signal handler (no allocation, no stdio buffering).
+bool write_byte(const char *path, char value) {
+    int fd = ::open(path, O_WRONLY);
+    if (fd < 0) return false;
+    ssize_t n = write(fd, &value, 1);
+    ::close(fd);
+    return n == 1;
+}
 } // namespace
 
 Framebuffer::~Framebuffer() { close(); }
@@ -95,22 +120,36 @@ bool Framebuffer::open(const char *dev) {
               << var.bits_per_pixel << "bpp, stride " << line_length_
               << std::endl;
 
-    // Take the console VT into graphics mode so fbcon stops drawing (cursor
-    // blink, log messages) on top of our pixels. Non-fatal if it fails (e.g.
-    // not running on a real VT) -- you'll just see the console bleed through.
+    // Stop the kernel framebuffer console (fbcon) from repainting text/cursor
+    // on top of our pixels. Two layers, because KD_GRAPHICS alone isn't enough
+    // under the KMS/vc4 driver on Raspberry Pi OS:
+    //   1. unbind fbcon from the framebuffer entirely (the reliable fix), and
+    //   2. put the VT into graphics mode (belt-and-suspenders / older stacks).
+    // Both need root (sysfs write / VT access) and are non-fatal if they fail.
+    for (int i = 0; i < 8; ++i) {
+        if (!is_fbcon(i)) continue;
+        char bind_path[64];
+        std::snprintf(bind_path, sizeof(bind_path),
+                      "/sys/class/vtconsole/vtcon%d/bind", i);
+        if (write_byte(bind_path, '0')) {
+            std::snprintf(fbcon_bind_path_, sizeof(fbcon_bind_path_),
+                          "%s", bind_path);
+            fbcon_unbound_ = true;
+        } else {
+            std::cerr << "framebuffer: could not unbind fbcon (vtcon" << i
+                      << "): " << std::strerror(errno)
+                      << " (run as root? console may bleed through)"
+                      << std::endl;
+        }
+        break;
+    }
+
     tty_fd_ = ::open("/dev/tty0", O_RDWR);
     if (tty_fd_ >= 0) {
         if (ioctl(tty_fd_, KDSETMODE, KD_GRAPHICS) != 0) {
-            std::cerr << "framebuffer: KD_GRAPHICS failed: "
-                      << std::strerror(errno) << " (console may bleed through)"
-                      << std::endl;
             ::close(tty_fd_);
             tty_fd_ = -1;
         }
-    } else {
-        std::cerr << "framebuffer: open /dev/tty0 failed: "
-                  << std::strerror(errno) << " (console may bleed through)"
-                  << std::endl;
     }
 
     clear();
@@ -122,6 +161,10 @@ void Framebuffer::restore_console() {
         ioctl(tty_fd_, KDSETMODE, KD_TEXT);
         ::close(tty_fd_);
         tty_fd_ = -1;
+    }
+    if (fbcon_unbound_) {
+        write_byte(fbcon_bind_path_, '1');   // rebind fbcon -> console returns
+        fbcon_unbound_ = false;
     }
 }
 
