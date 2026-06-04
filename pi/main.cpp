@@ -94,10 +94,16 @@ int main() {
   listen(sockfd, 2);
 
 
-  // accepts new connection
-  std::cout << "Waiting for Incoming Connection" << std::endl;
-  addr_size = sizeof(their_addr);
-  connfd = accept(sockfd, (struct sockaddr *) &their_addr, &addr_size);
+  // serve clients one at a time, but keep running after each disconnects
+  // (otherwise the process exits after the first connection closes)
+  while (true) {
+    std::cout << "Waiting for Incoming Connection" << std::endl;
+    addr_size = sizeof(their_addr);
+    connfd = accept(sockfd, (struct sockaddr *) &their_addr, &addr_size);
+    if (connfd < 0) {
+        std::cerr << "accept failed: " << strerror(errno) << std::endl;
+        continue;
+    }
 
   // read frames until the peer closes the connection.
   // each frame is: PacketHeader -> FrameHeader -> JPEG bytes
@@ -159,8 +165,10 @@ int main() {
       out.write(reinterpret_cast<const char *>(jpeg.data()), jpeg_size);
   }
 
-  close(sockfd);
+  // this client is done; close it and loop back to accept the next one
   close(connfd);
+  }
 
+  close(sockfd);
     return 0;
 }

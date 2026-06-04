@@ -29,7 +29,7 @@
 //   pipette_host <pi-ip> [port]
 // (LAN IPs are handed out by DHCP and can change — reserve one on your
 //  router, or pass it on the command line.)
-#define PI_IP "192.168.0.138"
+#define PI_IP "192.168.7.1"
 #define PI_PORT "5000"
 
 //
@@ -223,7 +223,7 @@ int main(int argc, char *argv[]) {
     // given we do not care about the local port;
     // we use connect
     if (connect(s, servinfo->ai_addr, servinfo->ai_addrlen) < 0) {
-        std::cerr << "Connection FAILED: address " << pi_ip << " on Port " << pi_port << std::endl;
+        std::cerr << "Connection FAILED: address " << pi_ip << " on Port " << pi_port << ": " << strerror(errno) << std::endl;
         exit(1);
     }
 
