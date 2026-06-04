@@ -2,9 +2,11 @@
  *
  */
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <functional>
 #include <iostream>
 #include <cstring>
@@ -23,7 +25,11 @@
 #include "capture.hpp"
 #include "encoder.hpp"
 
-#define PI_IP "192.168.7.1"
+// Default to the Pi's LAN address; override at runtime with:
+//   pipette_host <pi-ip> [port]
+// (LAN IPs are handed out by DHCP and can change — reserve one on your
+//  router, or pass it on the command line.)
+#define PI_IP "192.168.0.138"
 #define PI_PORT "5000"
 
 //
@@ -32,6 +38,11 @@
 // 3. Lock, overwite and unlock
 // 4. nitofy socket thread to send the frame
 
+// set false by Ctrl+C (SIGINT) / SIGTERM, or by the sender on a dropped
+// connection, to wind the capture loop down cleanly.
+static std::atomic<bool> g_running{true};
+
+static void on_signal(int) { g_running = false; }
 
 void capture_thread(jpegFrame &f) {
     Pipette::Capture capture;
@@ -69,8 +80,11 @@ void capture_thread(jpegFrame &f) {
         f.cv.notify_one();
     });
 
-    // keep this thread alive
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    // stream continuously: ScreenCaptureKit delivers frames on its own queue,
+    // so just keep this thread alive until we're asked to shut down.
+    while (g_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
     capture.stop();
 
@@ -160,14 +174,23 @@ void sender_thread(jpegFrame &f, int s) {
             !send_all(s, &fhdr, sizeof(fhdr)) ||
             !send_all(s, jpeg.data(), jpeg.size())) {
             std::cerr << "send failed\n";
+            g_running = false;   // tell capture_thread to wind down too
             break;
         }
         std::cout << "Sent Successfully\n";
     }
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     jpegFrame f;
+
+    // Ctrl+C / kill -> stop capturing and exit cleanly instead of dying mid-frame
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+
+    // Pi address: argv[1] overrides the default IP, argv[2] the port.
+    const char *pi_ip   = (argc > 1) ? argv[1] : PI_IP;
+    const char *pi_port = (argc > 2) ? argv[2] : PI_PORT;
 
     // Connect to PI server and enables streaming capability
     int status;
@@ -177,10 +200,10 @@ int main() {
     memset(&hints, 0, sizeof(hints)); // make sure that hints is empty
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
+    // client side: we connect(), so no AI_PASSIVE (that's for bind() servers)
 
     // generates a linked list of all addrinfo, (saved in servinfo)
-    if ((status = getaddrinfo(PI_IP, PI_PORT, &hints, &servinfo)) != 0) {
+    if ((status = getaddrinfo(pi_ip, pi_port, &hints, &servinfo)) != 0) {
         std::cerr << "getaddrinfo: " << gai_strerror(status) << std::endl;
         exit(1);
     }
@@ -200,7 +223,7 @@ int main() {
     // given we do not care about the local port;
     // we use connect
     if (connect(s, servinfo->ai_addr, servinfo->ai_addrlen) < 0) {
-        std::cerr << "Connection FAILED: address " << PI_IP << " on Port " << PI_PORT << std::endl;
+        std::cerr << "Connection FAILED: address " << pi_ip << " on Port " << pi_port << std::endl;
         exit(1);
     }
 

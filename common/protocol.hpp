@@ -5,7 +5,7 @@ namespace Pipette {
 
 static constexpr uint32_t MAGIC = 0xDEADF00D;
 static constexpr uint8_t VERSION = 1;
-static constexpr char * PORT = "5000";
+static constexpr const char * PORT = "5000";
 
 enum class PacketType: uint8_t {
     Video = 0,

@@ -73,9 +73,24 @@ int main() {
 
   //  make a socket, bind to the socket and start listening on the socket
   sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-  if (bind(sockfd, res->ai_addr, res->ai_addrlen) != 0 ) {
-      std::cerr << "Unable to Bind to " << Pipette::PORT << std::endl;
+  if (sockfd < 0) {
+      std::cerr << "Unable to create socket: " << strerror(errno) << std::endl;
+      freeaddrinfo(res);
+      return 1;
   }
+
+  // allow rebinding the port immediately after a previous run exits, instead of
+  // waiting out the socket's TIME_WAIT (otherwise restart -> "Address already in use")
+  int yes = 1;
+  setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+  if (bind(sockfd, res->ai_addr, res->ai_addrlen) != 0) {
+      std::cerr << "Unable to Bind to " << Pipette::PORT << ": " << strerror(errno) << std::endl;
+      freeaddrinfo(res);
+      close(sockfd);
+      return 1;
+  }
+  freeaddrinfo(res);
   listen(sockfd, 2);
 
 
