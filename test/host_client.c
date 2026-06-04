@@ -34,8 +34,28 @@ int main(int argc, char *argv[]) {
     }
 
     printf("Connecting to %s:%d ...\n", ip, port);
-    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        fprintf(stderr, "connect failed: %s\n", strerror(errno));
+
+    // The USB-gadget link comes up cold: ARP for the Pi may not be resolved
+    // yet, so the first connect() can fail with EHOSTUNREACH ("No route to
+    // host"). Retry for a few seconds so a cold link self-heals instead of
+    // failing the test on a transient condition.
+    int connected = 0, last_err = 0;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            connected = 1;
+            break;
+        }
+        last_err = errno;
+        if (last_err != EHOSTUNREACH && last_err != ENETUNREACH &&
+            last_err != ECONNREFUSED && last_err != ETIMEDOUT) {
+            break;   // non-transient error; no point retrying
+        }
+        close(sock);                 // a failed connect leaves the socket unusable
+        usleep(200 * 1000);          // 200 ms between attempts (~4 s total)
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) { perror("socket"); return 1; }
+    }
+    if (!connected) {
+        fprintf(stderr, "connect failed: %s\n", strerror(last_err));
         return 1;
     }
     printf("Connected.\n");

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cerrno>
 #include "../common/protocol.hpp"
+#include "framebuffer.hpp"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
@@ -93,6 +94,13 @@ int main() {
   freeaddrinfo(res);
   listen(sockfd, 2);
 
+  // try to open the screen. if it fails (e.g. no /dev/fb0, or the macOS host
+  // build), we fall back to dumping the latest frame to frame.jpg instead.
+  Pipette::Framebuffer screen;
+  bool have_screen = screen.open();
+  if (!have_screen) {
+    std::cout << "no framebuffer; writing frames to frame.jpg" << std::endl;
+  }
 
   // serve clients one at a time, but keep running after each disconnects
   // (otherwise the process exits after the first connection closes)
@@ -160,9 +168,12 @@ int main() {
 
       if (!ok) continue;   // drop corrupt frame
 
-      // write out the latest frame so it can be viewed/decoded
-      std::ofstream out("frame.jpg", std::ios::binary | std::ios::trunc);
-      out.write(reinterpret_cast<const char *>(jpeg.data()), jpeg_size);
+      // push the frame to the screen; if there's no framebuffer (or the decode
+      // fails), fall back to dumping the latest frame to disk.
+      if (!have_screen || !screen.show_jpeg(jpeg.data(), jpeg_size)) {
+          std::ofstream out("frame.jpg", std::ios::binary | std::ios::trunc);
+          out.write(reinterpret_cast<const char *>(jpeg.data()), jpeg_size);
+      }
   }
 
   // this client is done; close it and loop back to accept the next one
